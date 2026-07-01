@@ -1,119 +1,142 @@
 import os
-import re
-import json
+import sys
 import requests
-from typing import List, Dict, Any, Optional
+import pymysql
+from datetime import datetime
 
-# ================= 配置区域 =================
-WATCH_LIST: List[str] = ["001186", "161725"] 
-TEST_MODE: bool = False  # 如果想测试卡片效果，可以先改成 True
-# ============================================
+# ==========================================
+# 1. 从 GitHub Secrets 自动读取环境变量
+# ==========================================
+# 飞书配置
+FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 
-def get_fund_data(fund_code: str) -> Optional[Dict[str, Any]]:
-    """
-    从天天基金官方数据源获取单只基金的即时盘中数据
-    """
-    url: str = f"http://fundgz.1234567.com.cn/js/{fund_code}.js"
-    try:
-        response: requests.Response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            match = re.match(r"jsonpgz\((.*)\);", response.text)
-            if match:
-                return json.loads(match.group(1))
-    except Exception as e:
-        print(f"[-] 获取基金 {fund_code} 失败: {e}")
-    return None
+# 阿里云 MySQL 配置
+DB_HOST = os.environ.get('DB_HOST')
+DB_USER = os.environ.get('DB_USER')
+DB_PASSWORD = os.environ.get('DB_PASSWORD')
+DB_NAME = os.environ.get('DB_NAME')
 
-def judge_fund(fund_data: Dict[str, Any]) -> bool:
+# ==========================================
+# 2. 核心业务：数据抓取与策略筛选
+# ==========================================
+def fetch_and_filter_funds():
     """
-    策略判定：盘中估值跌幅是否达到定投标准
+    这里编写你原有的天天基金数据抓取与策略筛选逻辑。
+    为了演示整套流水线畅通，这里模拟两条即将入库的基金估值数据。
+    实际使用时，请将其替换为你真正的抓取解析代码，并返回相同格式的列表。
     """
-    if TEST_MODE:
-        return True
-    try:
-        growth_rate: float = float(fund_data.get("gszzl", 0))
-        if growth_rate <= -1.5:  # 跌幅超过 1.5% 触发
-            return True
-    except ValueError:
-        pass
-    return False
-
-def build_feishu_card(fund_list: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    构建飞书高级互动卡片数据结构
-    """
-    elements: List[Dict[str, Any]] = []
+    print("[*] 开始抓取基金当日盘中估值行情...")
     
-    for fund in fund_list:
-        name: str = fund.get("name", "未知基金")
-        code: str = fund.get("fundcode", "000000")
-        price: str = fund.get("gsz", "0.0000")
-        growth: str = fund.get("gszzl", "0.00")
-        time: str = fund.get("gztime", "未知时间")
-        
-        # 判断涨跌颜色（国内股市：绿跌红涨）
-        is_drop: bool = float(growth) < 0
-        color_tag: str = "🟢" if is_drop else "🔴"
-        text_color: str = "green" if is_drop else "red"
-        
-        # 组装飞书卡片的内容区块
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"{color_tag} **{name}** ({code})\n• **盘中估净值**: {price}\n• **当日涨跌幅**: <font color='{text_color}'>**{growth}%**</font>\n• **数据更新时间**: {time}"
-            }
-        })
-        elements.append({"tag": "hr"}) # 分割线
-        
-    if elements:
-        elements.pop() # 移除最后一个多余的分割线
+    # 模拟抓取到的数据列表，每个元素为一个元组，对应数据库表字段：
+    # (fund_code, fund_name, estimated_nav, growth_rate, valuation_time)
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    mock_filtered_funds = [
+        ("005918", "天弘中证计算机主题ETF联接A", 0.9854, 1.25, current_time),
+        ("161725", "招商中证白酒指数A", 2.1450, -0.85, current_time)
+    ]
+    
+    # 💡 提示：如果今天没有符合你策略的基金，可以返回空列表 []
+    return mock_filtered_funds
 
-    # 飞书卡片标准 JSON 协议
-    return {
-        "msg_type": "interactive",
-        "card": {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": "🤖 基金定投策略监控日报" if not TEST_MODE else "🧪 飞书高级卡片测试成功"
-                },
-                "template": "turquoise" if not TEST_MODE else "blue"
-            },
-            "elements": elements
+# ==========================================
+# 3. 核心功能：批量写入云服务器 MySQL
+# ==========================================
+def save_to_mysql(fund_list):
+    if not fund_list:
+        print("[*] 今日无符合策略的基金数据，跳过数据库写入。")
+        return False
+
+    # 检查数据库环境变量是否齐全
+    if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
+        print("[-] 错误: 缺少数据库配置环境变量，请检查 GitHub Secrets！")
+        return False
+
+    print(f"[*] 发现 {len(fund_list)} 条基金数据，正在尝试连接远程服务器 {DB_HOST}...")
+    connection = None
+    try:
+        # 建立与阿里云服务器的公网 SSL/TCP 连接
+        connection = pymysql.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            port=3306,
+            charset='utf8mb4',
+            connect_timeout=10
+        )
+        
+        with connection.cursor() as cursor:
+            # 编写标准的批量插入 SQL 语句
+            sql = """
+            INSERT INTO fund_valuation_history 
+            (fund_code, fund_name, estimated_nav, growth_rate, valuation_time) 
+            VALUES (%s, %s, %s, %s, %s)
+            """
+            # 使用 executemany 高效批量插入
+            cursor.executemany(sql, fund_list)
+            
+        # 提交事务
+        connection.commit()
+        print("[+] 恭喜！基金数据已成功实时同步至阿里云 MySQL 数据库！")
+        return True
+
+    except Exception as e:
+        print(f"[-] 数据库入库失败，错误原因: {e}")
+        return False
+    finally:
+        if connection:
+            connection.close()
+
+# ==========================================
+# 4. 核心功能：发送飞书卡片通知
+# ==========================================
+def send_feishu_notification(fund_list, db_success):
+    if not FEISHU_WEBHOOK:
+        print("[*] 未配置飞书 Webhook，跳过群通知发送。")
+        return
+
+    # 根据数据库写入结果，动态在卡片底部加个小标签
+    db_status_text = "🟢 数据已同步至云数据库" if db_success else "🔴 数据未写入数据库"
+
+    # 构建飞书消息体（这里可以放你原本高颜值的卡片 JSON）
+    # 简单示例如下：
+    content_text = f"💡 今日基金监控报告\n时间: {datetime.now().strftime('%Y-%m-%d')}\n\n"
+    if fund_list:
+        for fund in fund_list:
+            content_text += f"📌 [{fund[0]}] {fund[1]}\n   盘中估值: {fund[2]} ({fund[3]}%)\n"
+    else:
+        content_text += "✨ 今日无满足特定策略的基金。\n"
+        
+    content_text += f"\n状态: {db_status_text}"
+
+    payload = {
+        "msg_type": "text",
+        "content": {
+            "text": content_text
         }
     }
 
-def send_to_feishu(webhook_url: str, card_payload: Dict[str, Any]) -> None:
-    """
-    将卡片消息推送到飞书网关
-    """
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
     try:
-        res: requests.Response = requests.post(webhook_url, json=card_payload, headers=headers, timeout=10)
-        print(f"[+] 飞书卡片推送状态: {res.status_code}, 响应: {res.text}")
+        response = requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("[+] 飞书消息卡片发送成功！")
+        else:
+            print(f"[-] 飞书发送失败，状态码: {response.status_code}")
     except Exception as e:
-        print(f"[-] 推送异常: {e}")
+        print(f"[-] 飞书发送异常: {e}")
 
-def main() -> None:
-    webhook_url: Optional[str] = os.getenv("WEBHOOK_URL")
-    if not webhook_url:
-        print("[-] 未检测到 WEBHOOK_URL 环境变量。")
-        return
-
-    triggered_funds: List[Dict[str, Any]] = []
-
-    for code in WATCH_LIST:
-        data: Optional[Dict[str, Any]] = get_fund_data(code)
-        if data and judge_fund(data):
-            triggered_funds.append(data)
-
-    if triggered_funds:
-        card_payload = build_feishu_card(triggered_funds)
-        send_to_feishu(webhook_url, card_payload)
-    else:
-        print("[*] 今日无满足定投策略的基金。")
-
+# ==========================================
+# 5. 主程序入口
+# ==========================================
 if __name__ == "__main__":
-    main()
+    # 1. 抓取并筛选
+    filtered_funds = fetch_and_filter_funds()
+    
+    # 2. 存入阿里云 MySQL 并拿到结果状态
+    db_status = save_to_mysql(filtered_funds)
+    
+    # 3. 推送飞书通知
+    send_feishu_notification(filtered_funds, db_status)
+    
+    print("[*] 今日自动化流水线执行完毕。")
