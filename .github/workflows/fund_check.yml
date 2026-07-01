@@ -1,4 +1,24 @@
-- name: Install dependencies
+name: 每日资金检查
+
+on:
+  workflow_dispatch:  # 允许你在网页上手动点击按钮触发运行
+  schedule:
+    - cron: '0 7 * * 1-5'  # 自动定时触发（例如周一到周五北京时间下午3点，可自行修改）
+
+jobs:
+  check_fund:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests pymysql
