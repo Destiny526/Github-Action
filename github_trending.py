@@ -11,8 +11,8 @@ DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
 
-# 🎯 配置区：你想监控的编程语言（例如 "python", "go", "java", "javascript"）
-MONITOR_LANGUAGE = "python" 
+# 🎯 配置区：切换为 "go" 以测试 3.0 全新排版效果（后续可改回 "python"）
+MONITOR_LANGUAGE = "go" 
 
 # ==========================================
 # 1. 官方 API 驱动：获取过去一周内最火爆的开源项目
@@ -65,7 +65,6 @@ def save_and_filter_repos(repos):
                 
                 lang = r.get("language", MONITOR_LANGUAGE.capitalize())
                 total_stars = int(r.get("stargazers_count", 0))
-                # 官方搜索接口不带当日新增，我们用总 Star 和 Fork 数来体现热度
                 forks = int(r.get("forks_count", 0)) 
                 
                 # 🛡️ 查重逻辑：3天内推送过的项目绝对不重复推送
@@ -80,7 +79,6 @@ def save_and_filter_repos(repos):
                 INSERT INTO github_trends (repo_name, repo_url, description, language, stars_today, total_stars) 
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """
-                # 用 forks 暂代今日增量存储，保证表结构完整
                 cursor.execute(insert_sql, (name, url, desc, lang, forks, total_stars))
                 
                 unique_repos.append({
@@ -96,20 +94,21 @@ def save_and_filter_repos(repos):
     return unique_repos
 
 # ==========================================
-# 3. 发送飞书高级极客蓝卡片
+# 3. 发送飞书高级 3.0 Columns 分栏卡片
 # ==========================================
 def send_feishu_trending_card(repo_list):
     if not FEISHU_WEBHOOK or not repo_list: return
 
     today_str = datetime.now().strftime('%Y-%m-%d')
-    lang_tag = f"【官方认证 · {MONITOR_LANGUAGE.upper()} 趋势】"
+    lang_tag = f"官方认证 · {MONITOR_LANGUAGE.upper()}"
     
+    # 顶栏导言
     card_elements = [
         {
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"<font size='4'><b>🚀 GitHub 爆火新晋开源黑科技</b></font>\n当前定位：{lang_tag}\n\n直连 GitHub 官方数据大盘，精准筛选过去 7 天内全球热度爆发最高的尖端开源成果。"
+                "content": f"🎯 **订阅大盘：** `{lang_tag}`\n📅 **快报日期：** {today_str}\n\n*为您精选过去 7 天内，全球开源社区热度爆发系数最高的新晋黑马项目。*"
             }
         },
         {"tag": "hr"}
@@ -119,19 +118,51 @@ def send_feishu_trending_card(repo_list):
     for idx, r in enumerate(repo_list):
         medal = medals[idx] if idx < len(medals) else "🔹"
         
+        # 3.0 视觉核心：利用 Columns 组件将卡片左右对齐分栏
         card_elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"{medal} **NO.{idx+1} {r['name']}**\n💻 核心语言：`{r['lang']}`  |  🔥 全网总计：<font color='red'><b>{r['total_stars']} ⭐</b></font>  |  🍴 衍生派生：`{r['forks']} Forks`\n📝 项目简介：*{r['desc']}*"
-            }
+            "tag": "column_set",
+            "flex_mode": "stretch",
+            "background_style": "default",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 7,  # 左边占 70% 宽度放名字和简介
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"{medal} **{r['name']}**\n<font color='grey'>📝 {r['desc']}</font>"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 3,  # 右边占 30% 宽度，独立包裹数据方块
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"<font color='red'><b>⭐ {r['total_stars']}</b></font>\n<font color='blue'>🍴 {r['forks']}</font>"
+                            }
+                        }
+                    ]
+                }
+            ]
         })
+        
+        # 紧凑轻量按钮：告别臃肿，只占一小行
         card_elements.append({
             "tag": "action",
             "actions": [{
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "🌐 官方直达 / 查看源码"},
-                "type": "primary", 
+                "text": {"tag": "plain_text", "content": "⚡ 探索源码仓库"},
+                "type": "default", 
+                "size": "small",
                 "url": r['url']
             }]
         })
@@ -142,16 +173,16 @@ def send_feishu_trending_card(repo_list):
         "card": {
             "config": {"enable_forward": True},
             "header": {
-                "template": "blue",  # 极客科技蓝
-                "title": {"tag": "plain_text", "content": f"🛠️ GitHub Trending 官方技术早报 ({today_str})"}
+                "template": "violet",  # 升级为高级极客紫底色
+                "title": {"tag": "plain_text", "content": "💡 GitHub New-Waves 趋势早报"}
             },
-            "elements": card_elements[:-1] 
+            "elements": card_elements[:-1] # 移除末尾多余的分割线
         }
     }
 
     try:
         response = requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
-        print(f"[+] 飞书官方卡片发送成功，状态码: {response.status_code}")
+        print(f"[+] 3.0 美化版卡片发送成功，状态码: {response.status_code}")
     except Exception as e: 
         print(f"[-] 飞书发送失败: {e}")
 
