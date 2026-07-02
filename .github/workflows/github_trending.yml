@@ -21,5 +21,5 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          MY_GITHUB_PAT: ${{ secrets.MY_GITHUB_PAT }} # 💡 对应配置好的 Secret
+          MY_GITHUB_PAT: ${{ secrets.MY_GITHUB_PAT }}
         run: python github_trending.py
