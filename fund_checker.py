@@ -128,6 +128,9 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
     account_sign = "+" if today_total >= 0 else ""
     hold_sign = "+" if hold_total >= 0 else ""
     
+    # 提前处理数据库状态文本，防止f-string格式混乱
+    db_status_text = "🟢 写入成功" if db_success else "🔴 写入异常"
+    
     # 动态组装高阶 Fields 栅格组件
     card_fields = []
     for f in fund_list:
@@ -138,6 +141,9 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
         
         color = "red" if f['rate'] >= 0 else "green"
         rate_sign = "+" if f['rate'] >= 0 else ""
+        
+        today_earn_sign = "+" if f['today_earning'] >= 0 else ""
+        hold_earn_sign = "+" if f['hold_earning'] >= 0 else ""
         
         # 左栏：基础行情
         card_fields.append({
@@ -152,7 +158,7 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"💰 今日盈亏：<font color='{color}'>**{"+" if f['today_earning']>=0 else ""}{f['today_earning']} 元**</font>\n📦 累计盈亏：**{"+" if f['hold_earning']>=0 else ""}{f['hold_earning']} 元**\n⏱️ 净值估算：`{f['nav']}`"
+                "content": f"💰 今日盈亏：<font color='{color}'>**{today_earn_sign}{f['today_earning']} 元**</font>\n📦 累计盈亏：**{hold_earn_sign}{f['hold_earning']} 元**\n⏱️ 净值估算：`{f['nav']}`"
             }
         })
 
@@ -182,7 +188,7 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
                 {
                     "tag": "note",
                     "elements": [
-                        {"tag": "plain_text", "content": f"📡 数据源：天天基金实时节点 | 存储状态：{"🟢 写入成功" if db_success else "🔴 写入异常"}"}
+                        {"tag": "plain_text", "content": f"📡 数据源：天天基金实时节点 | 存储状态：{db_status_text}"}
                     ]
                 }
             ]
