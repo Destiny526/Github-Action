@@ -11,15 +11,43 @@ DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
 
-# 🎯 配置区：设定你想监控的编程语言（"python", "go", "javascript" 等）
+# 🎯 配置区：设定你想监控的编程语言
 MONITOR_LANGUAGE = "python" 
+
+# ==========================================
+# 🛡️ 工业级灾备：新增飞书报错告警卡片
+# ==========================================
+def send_error_alert(error_msg):
+    if not FEISHU_WEBHOOK: return
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"enable_forward": True},
+            "header": {
+                "template": "red", # 显眼的警报红
+                "title": {"tag": "plain_text", "content": "⚠️ GitHub 监控流运行异常"}
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"🚨 **异常时间：** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n🔍 **监控语言：** `{MONITOR_LANGUAGE.upper()}`\n❌ **详细错误日志：**\n```\n{error_msg}\n```\n*请及时检查 GitHub Actions 运行状态或 API 额度是否耗尽。*"
+                    }
+                }
+            ]
+        }
+    }
+    try:
+        requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[-] 连报警卡片都发不出去了: {e}")
 
 # ==========================================
 # 1. 官方 API 驱动：稳定获取新晋黑马项目
 # ==========================================
 def fetch_github_trending_official(lang="python"):
     print(f"[*] 正在调用 GitHub 官方 API 获取最热开源项目 (语言: {lang})...")
-    # 筛选过去 7 天内创建的项目
     seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
     query = f"language:{lang} created:>{seven_days_ago}"
     url = f"https://api.github.com/search/repositories?q={query}&sort=stars&order=desc"
@@ -36,13 +64,17 @@ def fetch_github_trending_official(lang="python"):
             print(f"[+] 成功从官方捕获到 {len(items)} 个候选项目！")
             return items[:5]
         else:
-            print(f"[-] 官方 API 响应异常，状态码: {response.status_code}")
+            err_text = f"官方 API 响应异常，状态码: {response.status_code}，详情: {response.text}"
+            print(f"[-] {err_text}")
+            send_error_alert(err_text) # 💡 触发飞书报错告警
     except Exception as e:
-        print(f"[-] 请求 GitHub 官方接口失败: {e}")
+        err_text = f"请求 GitHub 官方接口发生致命崩溃: {e}"
+        print(f"[-] {err_text}")
+        send_error_alert(err_text) # 💡 触发飞书崩溃告警
     return []
 
 # ==========================================
-# 2. 查重与持久化存储（内置自动备份机制）
+# 2. 查重、动态增量计算与持久化存储
 # ==========================================
 def save_and_filter_repos(repos):
     if not repos: return []
@@ -62,6 +94,18 @@ def save_and_filter_repos(repos):
                 total_stars = int(r.get("stargazers_count", 0))
                 forks = int(r.get("forks_count", 0)) 
                 
+                # 📈 算法核心：去数据库追踪这个项目历史上的 Star 数，计算真正的“今日暴涨”
+                stars_today = 0
+                history_sql = "SELECT total_stars FROM github_trends WHERE repo_name = %s ORDER BY pushed_at DESC LIMIT 1"
+                cursor.execute(history_sql, (name,))
+                history_data = cursor.fetchone()
+                
+                if history_data:
+                    last_total_stars = int(history_data[0])
+                    # 算差值
+                    if total_stars > last_total_stars:
+                        stars_today = total_stars - last_total_stars
+                
                 # 🛡️ 查重：3 天内推送过的不重复推送
                 check_sql = "SELECT id FROM github_trends WHERE repo_name = %s AND pushed_at > DATE_SUB(NOW(), INTERVAL 3 DAY)"
                 cursor.execute(check_sql, (name,))
@@ -69,24 +113,27 @@ def save_and_filter_repos(repos):
                     print(f"[~] 项目 {name} 近期已推送，自动跳过")
                     continue
                 
+                # 写入云数据库备份
                 insert_sql = """
                 INSERT INTO github_trends (repo_name, repo_url, description, language, stars_today, total_stars) 
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """
-                cursor.execute(insert_sql, (name, url, desc, lang, forks, total_stars))
+                cursor.execute(insert_sql, (name, url, desc, lang, stars_today, total_stars))
+                
                 unique_repos.append({
                     "name": name, "url": url, "desc": desc, "lang": lang,
-                    "forks": forks, "total_stars": total_stars
+                    "forks": forks, "total_stars": total_stars, "stars_today": stars_today
                 })
         connection.commit()
     except Exception as e:
         print(f"[-] 数据库处理异常: {e}")
+        send_error_alert(f"数据库存储/查重模块崩溃: {e}") # 💡 触发飞书存储异常告警
     finally:
         if 'connection' in locals() and connection: connection.close()
     return unique_repos
 
 # ==========================================
-# 3. 发送飞书 5.0 终极流线美学卡片
+# 3. 发送飞书 6.0 数据全景卡片
 # ==========================================
 def send_feishu_trending_card(repo_list):
     if not FEISHU_WEBHOOK or not repo_list: return
@@ -94,7 +141,6 @@ def send_feishu_trending_card(repo_list):
     today_str = datetime.now().strftime('%Y-%m-%d')
     lang_tag = f"官方认证 · {MONITOR_LANGUAGE.upper()} 趋势"
     
-    # 顶部摘要区：借鉴基金报结构，简洁清爽
     card_elements = [
         {
             "tag": "div",
@@ -108,15 +154,17 @@ def send_feishu_trending_card(repo_list):
     
     medals = ["🥇", "🥈", "🥉", "⚡", "✨"]
     
-    # 核心流式排版：坚固耐看，绝无错位变形
     for idx, r in enumerate(repo_list):
         medal = medals[idx] if idx < len(medals) else "🔹"
+        
+        # 💡 根据是否算出了“今日新增”动态渲染尾巴
+        trend_tail = f" (今日 +{r['stars_today']} 🔥)" if r['stars_today'] > 0 else ""
         
         card_elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"{medal} **[{r['name']}]({r['url']})**\n✨ 全网总计：<font color='red'><b>{r['total_stars']} ⭐</b></font>  |  🍴 派生：`{r['forks']}`  |  💻 语言：`{r['lang']}`\n<font color='grey'>📝 {r['desc']}</font>"
+                "content": f"{medal} **[{r['name']}]({r['url']})**\n✨ 全网总计：<font color='red'><b>{r['total_stars']} ⭐</b></font>{trend_tail}  |  🍴 派生：`{r['forks']}`  |  💻 语言：`{r['lang']}`\n<font color='grey'>📝 {r['desc']}</font>"
             }
         })
         card_elements.append({"tag": "hr"})
@@ -126,16 +174,16 @@ def send_feishu_trending_card(repo_list):
         "card": {
             "config": {"enable_forward": True},
             "header": {
-                "template": "blue",  # 换回你熟悉的经典沉稳商务蓝
+                "template": "blue", 
                 "title": {"tag": "plain_text", "content": "🚀 GitHub New-Waves 趋势早报"}
             },
-            "elements": card_elements[:-1] # 优雅地移除最后一条多余的分割线
+            "elements": card_elements[:-1]
         }
     }
 
     try:
         response = requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
-        print(f"[+] 5.0 完美版卡片发送成功，状态码: {response.status_code}")
+        print(f"[+] 6.0 升级版卡片发送成功，状态码: {response.status_code}")
     except Exception as e: 
         print(f"[-] 飞书发送失败: {e}")
 
