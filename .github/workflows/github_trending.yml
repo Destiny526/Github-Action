@@ -3,12 +3,11 @@ name: GitHub Trending Daily Cron
 on:
   workflow_dispatch: # 允许你手动点击测试运行
   schedule:
-    - cron: '30 0 * * *' # 🟢 北京时间每天早上 08:30 自动触发
+    - cron: '30 0 * * *' # 北京时间每天早上 08:30 自动触发
 
 jobs:
   run-trending:
-    runs-size: ubuntu-latest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 🟢 修正：已彻底移除错误的 runs-size
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v3
