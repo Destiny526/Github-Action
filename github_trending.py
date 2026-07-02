@@ -3,16 +3,28 @@ import requests
 import pymysql
 from datetime import datetime, timedelta
 
-# 配置获取
+# 配置获取 (通过环境变量，由 GitHub Secrets 自动注入)
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 DB_HOST = os.environ.get('DB_HOST')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
+DB_PORT = int(os.environ.get('DB_PORT', 4000))  # TiDB 默认端口 4000
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 GITHUB_TOKEN = os.environ.get('MY_GITHUB_PAT')
 
 MONITOR_LANGUAGE = "python"
+
+# 统一的数据库连接函数
+def get_db_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        autocommit=True
+    )
 
 # 1. AI 智能摘要与鉴赏
 def ask_ai_to_summarize_and_score(repo_name, raw_desc):
@@ -31,7 +43,7 @@ def ask_ai_to_summarize_and_score(repo_name, raw_desc):
     except: pass
     return 5, raw_desc
 
-# 2. 获取 GitHub 数据 (函数名已确保一致)
+# 2. 获取 GitHub 数据
 def fetch_github_trending_official(lang="python"):
     url = f"https://api.github.com/search/repositories?q=language:{lang} created:>{(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')}&sort=stars&order=desc"
     headers = {"Accept": "application/vnd.github.v3+json", "Authorization": f"token {GITHUB_TOKEN}", "User-Agent": "GitHub-Trending-Bot"}
@@ -41,7 +53,7 @@ def fetch_github_trending_official(lang="python"):
 # 3. 处理、评分、过滤、存储
 def save_and_filter_repos(repos):
     unique_repos = []
-    conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, port=3306)
+    conn = get_db_connection() # 使用封装后的连接
     with conn.cursor() as cursor:
         for r in repos:
             name, total_stars = r.get("full_name"), int(r.get("stargazers_count", 0))
@@ -68,7 +80,7 @@ def send_feishu_card(repo_list, title="🚀 GitHub 智能趋势 (精选)"):
 # 5. 周报逻辑
 def send_weekly_report():
     try:
-        conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, port=3306)
+        conn = get_db_connection() # 使用封装后的连接
         with conn.cursor() as cursor:
             cursor.execute("SELECT repo_name, repo_url, SUM(stars_today) as weekly_growth, MAX(total_stars) as total FROM github_trends WHERE pushed_at > DATE_SUB(NOW(), INTERVAL 7 DAY) GROUP BY repo_name ORDER BY weekly_growth DESC LIMIT 5")
             rows = cursor.fetchall()
