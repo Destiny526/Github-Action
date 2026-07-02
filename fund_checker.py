@@ -51,6 +51,7 @@ def fetch_and_calculate():
         print("[!] 警告：未在数据库中检测到任何资产持仓配置！")
         return [], 0.0, 0.0
 
+    print(f"[*] 开始计算资产实时盈亏，目标监控代码: {list(holdings.keys())}")
     calculated_funds = []
     total_today_earning = 0.0  
     total_hold_earning = 0.0   
@@ -136,7 +137,7 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
         color = "red" if f['rate'] >= 0 else "green"
         rate_sign = "+" if f['rate'] >= 0 else ""
         today_earn_sign = "+" if f['today_earning'] >= 0 else ""
-        hold_earn_sign = "+" if f['hold_earn_sign'] if 'hold_earn_sign' in locals() else ("+" if f['hold_earning'] >= 0 else "")
+        hold_earn_sign = "+" if f['hold_earning'] >= 0 else ""
         
         # 左栏：加入图形化能量条
         card_fields.append({
@@ -151,7 +152,7 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
             "is_short": True,
             "text": {
                 "tag": "lark_md",
-                "content": f"💰 今日盈亏：<font color='{color}'>**{today_earn_sign}{f['today_earning']} 元**</font>\n📦 累计盈亏：**{"+" if f['hold_earning']>=0 else ""}{f['hold_earning']} 元**\n💎 净值估算：**{f['nav']}**"
+                "content": f"💰 今日盈亏：<font color='{color}'>**{today_earn_sign}{f['today_earning']} 元**</font>\n📦 累计盈亏：**{hold_earn_sign}{f['hold_earning']} 元**\n💎 净值估算：**{f['nav']}**"
             }
         })
 
@@ -168,7 +169,7 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        # ✨ 彻底解决井号乱码：去掉所有 # 号，使用飞书原生支持的粗体超大高亮文字
+                        # ✨ 彻底解决符号乱码：去掉所有 # 号，使用飞书原生支持的粗体大字号样式
                         "content": f"<font size='4'><b>📊 今日账户总资产复盘</b></font>\n\n☀️ 今日全账户收益总计：<font color='{account_color}'>**{account_sign}{today_total} 元**</font>\n🌲 历史全账户持仓总盈亏：**{hold_sign}{hold_total} 元**"
                     }
                 },
