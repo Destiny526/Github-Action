@@ -1,35 +1,25 @@
-name: GitHub Trending Daily Bot
-
+name: GitHub Trending Bot
 on:
   schedule:
-    # 每天北京时间早上 9:00 运行 (UTC 1:00)
     - cron: '0 1 * * *'
-  workflow_dispatch: # 允许手动触发
-
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pymysql
-
-      - name: Execute Script
+        with: {python-version: '3.9'}
+      - name: Install
+        run: pip install requests pymysql
+      - name: Run
         env:
-          # 确保这些变量名与你在 GitHub Secrets 中配置的一致
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }} 
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MY_GITHUB_PAT: ${{ secrets.MY_GITHUB_PAT }} # 💡 对应配置好的 Secret
         run: python github_trending.py
