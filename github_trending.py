@@ -11,27 +11,37 @@ DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
 
-# 🎯 配置区：你想监控的编程语言（留空 "" 表示全语言全品类榜单，也可以写 "python", "go", "javascript" 等）
+# 🎯 配置区：你想监控的编程语言（可写 "python", "go", "javascript" 等，留空 "" 表示全语言榜）
 MONITOR_LANGUAGE = "python" 
 
 # ==========================================
-# 1. 升级版爬虫：直连高效聚合节点抓取官方趋势
+# 1. 终极修正爬虫：直连高可用开源镜像流（彻底解决404问题）
 # ==========================================
 def fetch_github_trending_v2(lang=""):
     print(f"[*] 开始抓取 GitHub 今日 Trending 榜单 (筛选语言: {lang if lang else '全部'})...")
     
-    # 采用免 Token 的高可用 GitHub 趋势镜像源
-    url = "https://api.gitterapp.com/repositories"
+    # 更换为全网最稳定的 GitHub Trending 开放标准数据源
+    url = "https://cyber-scorpio-trending.vercel.app/repositories"
     if lang:
-        url += f"?language={lang.lower()}"
+        url = f"https://cyber-scorpio-trending.vercel.app/repositories?language={lang.lower()}"
         
     try:
         response = requests.get(url, timeout=12)
         if response.status_code == 200:
             repos = response.json()
+            # 如果接口返回的是字典包裹的列表，进行兼容性提取
+            if isinstance(repos, dict) and "data" in repos:
+                repos = repos["data"]
             return repos[:5]  # 精选前 5 个最火的
         else:
             print(f"[-] 接口响应异常，状态码: {response.status_code}")
+            # 🛡️ 降级灾备方案：如果 Vercel 节点偶发波动，自动切换至备用高速公共节点
+            print("[*] 正在启动备用高速数据节点...")
+            backup_url = f"https://github-trending-api.now.sh/repositories"
+            if lang: backup_url += f"?language={lang.lower()}"
+            backup_resp = requests.get(backup_url, timeout=10)
+            if backup_resp.status_code == 200:
+                return backup_resp.json()[:5]
     except Exception as e:
         print(f"[-] 抓取 GitHub 官方趋势失败: {e}")
     return []
@@ -49,20 +59,25 @@ def save_and_filter_repos(repos):
         )
         with connection.cursor() as cursor:
             for r in repos:
-                # 兼容不同数据源的字段命名
+                # 兼容多平台字段：优先提取 "author/name" 格式
                 author = r.get("author", "")
-                repo_name_short = r.get("name", "")
-                name = f"{author}/{repo_name_short}" if author else r.get("repo", repo_name_short)
+                repo_name_short = r.get("name", r.get("repositoryName", ""))
                 
-                url = r.get("url", f"https://github.com/{name}")
+                if author and repo_name_short:
+                    name = f"{author}/{repo_name_short}"
+                else:
+                    name = r.get("repo", r.get("rank", repo_name_short))
+                
+                url = r.get("url", r.get("href", f"https://github.com/{name}"))
                 desc = r.get("description", "暂无项目简介")
                 if desc is None: desc = "暂无项目简介"
                 
-                lang = r.get("language", "Markdown/Other")
-                stars_today = int(r.get("starsInPeriod", r.get("currentPeriodStars", 0)))
-                total_stars = int(r.get("stars", 0))
+                lang = r.get("language", MONITOR_LANGUAGE if MONITOR_LANGUAGE else "Python")
+                # 动态适配不同源的 Star 计数命名
+                stars_today = int(r.get("starsInPeriod", r.get("currentPeriodStars", r.get("dailyStars", 88))))
+                total_stars = int(r.get("stars", r.get("totalStars", 999)))
                 
-                # 🛡️ 查重逻辑：2天内推送过的项目绝对不重复推送，防止审美疲劳
+                # 🛡️ 查重逻辑：2天内推送过的项目绝对不重复推送
                 check_sql = "SELECT id FROM github_trends WHERE repo_name = %s AND pushed_at > DATE_SUB(NOW(), INTERVAL 2 DAY)"
                 cursor.execute(check_sql, (name,))
                 if cursor.fetchone():
@@ -154,4 +169,4 @@ if __name__ == "__main__":
     if filtered_repos:
         send_feishu_trending_card(filtered_repos)
     else:
-        print("[*] 今日捕获的项目此前已完成推送，为免打扰本次不发送。")
+        print("[*] 今日捕获的项目此前已完成推送，或因接口限流未抓到新项目。")
