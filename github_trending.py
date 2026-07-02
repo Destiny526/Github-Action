@@ -12,7 +12,7 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
 
 # 🎯 配置区：设定你想监控的编程语言
-MONITOR_LANGUAGE = "go" 
+MONITOR_LANGUAGE = "javascript" 
 
 # ==========================================
 # 🛡️ 工业级灾备：新增飞书报错告警卡片
