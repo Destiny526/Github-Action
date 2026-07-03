@@ -21,34 +21,37 @@ def get_db_connection(retries=3, delay=5):
     for i in range(retries):
         try:
             return pymysql.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME,
-                autocommit=True
+                host=DB_HOST, port=DB_PORT, user=DB_USER,
+                password=DB_PASSWORD, database=DB_NAME, autocommit=True
             )
         except Exception as e:
-            print(f"数据库连接失败，重试中 ({i+1}/{retries})... 错误: {e}")
+            print(f"数据库连接失败，重试 ({i+1}/{retries})... 错误: {e}")
             time.sleep(delay)
     raise Exception("无法连接到数据库")
 
-# 2. AI 智能摘要与鉴赏
+# 2. AI 智能摘要（已增加详细错误日志）
 def ask_ai_to_summarize_and_score(repo_name, raw_desc):
     if not DEEPSEEK_API_KEY: return 5, raw_desc
-    prompt = f"项目名: {repo_name}，简介: {raw_desc}。请：1.用30字内中文大白话总结核心用途；2.根据技术价值从 0-10 分打分。返回格式：[分数] 总结内容。"
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+    payload = {
+        "model": "deepseek-chat", 
+        "messages": [{"role": "user", "content": f"项目: {repo_name}，简介: {raw_desc}。请：1.30字内总结；2.技术价值打分(0-10)。格式：[分数] 总结。"}], 
+        "temperature": 0.2
+    }
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        content = response.json()['choices'][0]['message']['content'].strip()
-        if ']' in content:
-            score = int(content.split(']')[0].replace('[', ''))
-            summary = content.split(']')[1].strip()
-            return score, summary
+        response = requests.post(url, json=payload, timeout=20)
+        if response.status_code == 200:
+            data = response.json()
+            content = data['choices'][0]['message']['content'].strip()
+            if ']' in content:
+                score = int(content.split(']')[0].replace('[', ''))
+                summary = content.split(']')[1].strip()
+                return score, summary
+        else:
+            print(f"DEBUG: AI API 失败 (状态码: {response.status_code}), 响应内容: {response.text}")
     except Exception as e:
-        print(f"AI 分析失败: {e}")
+        print(f"DEBUG: AI 请求异常: {str(e)}")
     return 5, raw_desc
 
 # 3. 获取 GitHub 数据
@@ -62,7 +65,7 @@ def fetch_github_trending_official(lang="python"):
         print(f"获取 GitHub 数据失败: {e}")
         return []
 
-# 4. 处理、评分、过滤、存储
+# 4. 处理、评分、存储
 def save_and_filter_repos(repos):
     unique_repos = []
     conn = get_db_connection()
@@ -88,33 +91,14 @@ def save_and_filter_repos(repos):
     return unique_repos
 
 # 5. 发送飞书卡片
-def send_feishu_card(repo_list, title="🚀 GitHub 智能趋势 (精选)"):
+def send_feishu_card(repo_list):
     if not repo_list or not FEISHU_WEBHOOK: return
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"**[{r['name']}]({r['url']})**\n⭐ {r['stars']} (今日 +{r['today']}) | 💡 {r['desc']}"}} for r in repo_list]
     for i in range(len(elements) - 1, 0, -1): elements.insert(i, {"tag": "hr"})
-    try:
-        requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": title}}, "elements": elements}})
-    except Exception as e:
-        print(f"飞书发送失败: {e}")
-
-# 6. 周报逻辑
-def send_weekly_report():
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT repo_name, repo_url, SUM(stars_today) as weekly_growth, MAX(total_stars) as total FROM github_trends WHERE pushed_at > DATE_SUB(NOW(), INTERVAL 7 DAY) GROUP BY repo_name ORDER BY weekly_growth DESC LIMIT 5")
-            rows = cursor.fetchall()
-            if rows:
-                elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"**[{r[0]}]({r[1]})**\n📈 本周爆涨: +{r[2]} | 🔥 总量: {r[3]}"}} for r in rows]
-                for i in range(len(elements) - 1, 0, -1): elements.insert(i, {"tag": "hr"})
-                requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": "🏆 GitHub 本周硬核黑马周报"}}, "elements": elements}})
-        conn.close()
-    except Exception as e:
-        print(f"周报发送失败: {e}")
+    requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": "🚀 GitHub 智能趋势 (精选)"}}, "elements": elements}})
 
 if __name__ == "__main__":
     raw_data = fetch_github_trending_official(MONITOR_LANGUAGE)
     if raw_data:
         filtered_data = save_and_filter_repos(raw_data)
         if filtered_data: send_feishu_card(filtered_data)
-    if datetime.now().weekday() == 6: send_weekly_report()
