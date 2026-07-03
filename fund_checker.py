@@ -11,9 +11,9 @@ DB_HOST = os.environ.get('DB_HOST')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
-DB_PORT = int(os.environ.get('DB_PORT', 4000)) # 适配 TiDB 4000 端口
+DB_PORT = int(os.environ.get('DB_PORT', 4000))
 
-# 1. 统一数据库连接函数（带重试机制）
+# 1. 统一数据库连接（完全对齐 GitHub Bot 的重试逻辑）
 def get_db_connection(retries=3, delay=5):
     for i in range(retries):
         try:
@@ -28,7 +28,7 @@ def get_db_connection(retries=3, delay=5):
             time.sleep(delay)
     raise Exception("无法连接到数据库")
 
-# 📊 独家算法：可视化纯文本图形条
+# 2. 可视化条算法（保持原有逻辑）
 def generate_visual_bar(rate):
     try:
         level = min(max(int(abs(rate) * 3), 1), 10)
@@ -38,30 +38,27 @@ def generate_visual_bar(rate):
     except:
         return "`[░░░░░░░░░░]`"
 
+# 3. 获取配置
 def get_user_holdings():
     holdings = {}
-    conn = None
+    conn = get_db_connection()
     try:
-        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM user_holdings")
             for row in cursor.fetchall():
                 holdings[row['fund_code']] = row
-    except Exception as e:
-        print(f"[-] 读取持仓配置失败: {e}")
     finally:
-        if conn: conn.close()
+        conn.close()
     return holdings
 
+# 4. 核心计算逻辑
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
-        print("[!] 警告：未检测到任何资产持仓配置！")
+        print("[!] 未检测到持仓配置！")
         return [], 0.0, 0.0
 
-    calculated_funds = []
-    total_today_earning = 0.0
-    total_hold_earning = 0.0
+    calculated_funds, total_today_earning, total_hold_earning = [], 0.0, 0.0
 
     for code, meta in holdings.items():
         try:
@@ -96,11 +93,11 @@ def fetch_and_calculate():
             
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
+# 5. 数据入库（标准化处理）
 def save_snapshot_to_mysql(fund_list):
     if not fund_list: return False
-    conn = None
+    conn = get_db_connection()
     try:
-        conn = get_db_connection()
         with conn.cursor() as cursor:
             sql = "INSERT INTO fund_valuation_history (fund_code, fund_name, estimated_nav, growth_rate, valuation_time) VALUES (%s, %s, %s, %s, %s)"
             cursor.executemany(sql, [(f['code'], f['name'], f['nav'], f['rate'], f['v_time']) for f in fund_list])
@@ -110,31 +107,22 @@ def save_snapshot_to_mysql(fund_list):
         print(f"[-] 历史快照存入失败: {e}")
         return False
     finally:
-        if conn: conn.close()
+        conn.close()
 
+# 6. 推送飞书卡片
 def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
     if not FEISHU_WEBHOOK: return
     
-    # 增加阈值报警逻辑
-    alert_msg = ""
-    for f in fund_list:
-        if abs(f['rate']) > 3.0:
-            alert_msg += f"\n⚠️ 预警: {f['name']} 波动达 {f['rate']}%!"
-
+    # 预警逻辑
+    alert_msg = "\n".join([f"⚠️ 预警: {f['name']} 波动达 {f['rate']}%!" for f in fund_list if abs(f['rate']) > 3.0])
     today_str = datetime.now().strftime('%Y-%m-%d')
     account_color = "red" if today_total >= 0 else "green"
     
     card_fields = []
     for f in fund_list:
         color = "red" if f['rate'] >= 0 else "green"
-        card_fields.append({
-            "is_short": True,
-            "text": {"tag": "lark_md", "content": f"**{f['name']}**\n📊 涨跌: <font color='{color}'>**{f['rate']}%**</font>\n{f['visual_bar']}"}
-        })
-        card_fields.append({
-            "is_short": True,
-            "text": {"tag": "lark_md", "content": f"💰 今日: **{f['today_earning']}**\n📦 累计: **{f['hold_earning']}**"}
-        })
+        card_fields.append({"is_short": True, "text": {"tag": "lark_md", "content": f"**{f['name']}**\n📊 涨跌: <font color='{color}'>**{f['rate']}%**</font>\n{f['visual_bar']}"}})
+        card_fields.append({"is_short": True, "text": {"tag": "lark_md", "content": f"💰 今日: **{f['today_earning']}**\n📦 累计: **{f['hold_earning']}**"}})
 
     payload = {
         "msg_type": "interactive",
