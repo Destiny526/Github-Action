@@ -1,4 +1,9 @@
 import os
+print(f"DEBUG: 环境中获取到的 API Key 长度为: {len(os.environ.get('DEEPSEEK_API_KEY', ''))}")
+# 别运行其他复杂的逻辑，运行完看日志的长度是否为 0
+
+
+import os
 import requests
 import pymysql
 import time
