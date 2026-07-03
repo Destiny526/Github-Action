@@ -1,33 +1,27 @@
 name: 每日资金检查
 
 on:
-  workflow_dispatch:  # 允许你在网页上手动点击按钮触发运行
+  workflow_dispatch:
   schedule:
-    - cron: '0 12 * * 1-5'  # 自动定时触发（例如周一到周五北京时间下午3点，可自行修改）
+    - cron: '0 12 * * *' # UTC 12:00，即北京时间晚上 20:00
 
 jobs:
   check_fund:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pymysql
-
-      - name: Run script
+      - name: Install
+        run: pip install requests pymysql
+      - name: Run
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: '4000' # 必须添加此行
         run: python fund_checker.py
