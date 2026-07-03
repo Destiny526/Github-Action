@@ -1,9 +1,4 @@
 import os
-print(f"DEBUG: 环境中获取到的 API Key 长度为: {len(os.environ.get('DEEPSEEK_API_KEY', ''))}")
-# 别运行其他复杂的逻辑，运行完看日志的长度是否为 0
-
-
-import os
 import requests
 import pymysql
 import time
@@ -34,18 +29,23 @@ def get_db_connection(retries=3, delay=5):
             time.sleep(delay)
     raise Exception("无法连接到数据库")
 
-# 2. AI 智能摘要（已增加详细错误日志）
+# 2. AI 智能摘要（已修正 URL 和鉴权格式）
 def ask_ai_to_summarize_and_score(repo_name, raw_desc):
     if not DEEPSEEK_API_KEY: return 5, raw_desc
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    
+    # 使用标准接口地址
+    url = "https://api.deepseek.com/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY.strip()}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "model": "deepseek-chat", 
         "messages": [{"role": "user", "content": f"项目: {repo_name}，简介: {raw_desc}。请：1.30字内总结；2.技术价值打分(0-10)。格式：[分数] 总结。"}], 
         "temperature": 0.2
     }
     try:
-        response = requests.post(url, json=payload, timeout=20)
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
         if response.status_code == 200:
             data = response.json()
             content = data['choices'][0]['message']['content'].strip()
