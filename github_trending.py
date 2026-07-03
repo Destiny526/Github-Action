@@ -1,35 +1,42 @@
 import os
 import requests
 import pymysql
+import time
 from datetime import datetime, timedelta
 
-# 配置获取 (通过环境变量，由 GitHub Secrets 自动注入)
+# 配置获取
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 DB_HOST = os.environ.get('DB_HOST')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
-DB_PORT = int(os.environ.get('DB_PORT', 4000))  # TiDB 默认端口 4000
+DB_PORT = int(os.environ.get('DB_PORT', 4000))
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 GITHUB_TOKEN = os.environ.get('MY_GITHUB_PAT')
 
 MONITOR_LANGUAGE = "python"
 
-# 统一的数据库连接函数
-def get_db_connection():
-    return pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        autocommit=True
-    )
+# 1. 统一的数据库连接函数（带重试机制）
+def get_db_connection(retries=3, delay=5):
+    for i in range(retries):
+        try:
+            return pymysql.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME,
+                autocommit=True
+            )
+        except Exception as e:
+            print(f"数据库连接失败，重试中 ({i+1}/{retries})... 错误: {e}")
+            time.sleep(delay)
+    raise Exception("无法连接到数据库")
 
-# 1. AI 智能摘要与鉴赏
+# 2. AI 智能摘要与鉴赏
 def ask_ai_to_summarize_and_score(repo_name, raw_desc):
     if not DEEPSEEK_API_KEY: return 5, raw_desc
-    prompt = f"项目名: {repo_name}，简介: {raw_desc}。请：1.用30字内中文大白话总结核心用途；2.根据技术价值从 0-10 分打分（0-5分代表文档/简单Demo，6-10分代表有价值工具/框架）。返回格式：[分数] 总结内容。"
+    prompt = f"项目名: {repo_name}，简介: {raw_desc}。请：1.用30字内中文大白话总结核心用途；2.根据技术价值从 0-10 分打分。返回格式：[分数] 总结内容。"
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
@@ -40,47 +47,60 @@ def ask_ai_to_summarize_and_score(repo_name, raw_desc):
             score = int(content.split(']')[0].replace('[', ''))
             summary = content.split(']')[1].strip()
             return score, summary
-    except: pass
+    except Exception as e:
+        print(f"AI 分析失败: {e}")
     return 5, raw_desc
 
-# 2. 获取 GitHub 数据
+# 3. 获取 GitHub 数据
 def fetch_github_trending_official(lang="python"):
     url = f"https://api.github.com/search/repositories?q=language:{lang} created:>{(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')}&sort=stars&order=desc"
     headers = {"Accept": "application/vnd.github.v3+json", "Authorization": f"token {GITHUB_TOKEN}", "User-Agent": "GitHub-Trending-Bot"}
-    response = requests.get(url, headers=headers, timeout=15)
-    return response.json().get("items", [])[:8] if response.status_code == 200 else []
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        return response.json().get("items", [])[:8] if response.status_code == 200 else []
+    except Exception as e:
+        print(f"获取 GitHub 数据失败: {e}")
+        return []
 
-# 3. 处理、评分、过滤、存储
+# 4. 处理、评分、过滤、存储
 def save_and_filter_repos(repos):
     unique_repos = []
-    conn = get_db_connection() # 使用封装后的连接
-    with conn.cursor() as cursor:
-        for r in repos:
-            name, total_stars = r.get("full_name"), int(r.get("stargazers_count", 0))
-            cursor.execute("SELECT total_stars FROM github_trends WHERE repo_name = %s ORDER BY pushed_at DESC LIMIT 1", (name,))
-            last = cursor.fetchone()
-            stars_today = (total_stars - int(last[0])) if last else 0
-            cursor.execute("SELECT id FROM github_trends WHERE repo_name = %s AND pushed_at > DATE_SUB(NOW(), INTERVAL 3 DAY)", (name,))
-            if cursor.fetchone(): continue
-            score, ai_desc = ask_ai_to_summarize_and_score(name, r.get("description", "暂无简介"))
-            if score < 6: continue
-            cursor.execute("INSERT INTO github_trends (repo_name, repo_url, description, language, stars_today, total_stars) VALUES (%s, %s, %s, %s, %s, %s)",
-                           (name, r.get("html_url"), ai_desc, r.get("language", "Python"), stars_today, total_stars))
-            unique_repos.append({"name": name, "url": r.get("html_url"), "desc": ai_desc, "stars": total_stars, "today": stars_today})
-    conn.commit(); conn.close()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            for r in repos:
+                name, total_stars = r.get("full_name"), int(r.get("stargazers_count", 0))
+                cursor.execute("SELECT total_stars FROM github_trends WHERE repo_name = %s ORDER BY pushed_at DESC LIMIT 1", (name,))
+                last = cursor.fetchone()
+                stars_today = (total_stars - int(last[0])) if last and last[0] else 0
+                
+                cursor.execute("SELECT id FROM github_trends WHERE repo_name = %s AND pushed_at > DATE_SUB(NOW(), INTERVAL 3 DAY)", (name,))
+                if cursor.fetchone(): continue
+                
+                score, ai_desc = ask_ai_to_summarize_and_score(name, r.get("description", "暂无简介"))
+                if score < 6: continue
+                
+                cursor.execute("INSERT INTO github_trends (repo_name, repo_url, description, language, stars_today, total_stars) VALUES (%s, %s, %s, %s, %s, %s)",
+                               (name, r.get("html_url"), ai_desc, r.get("language", "Python"), stars_today, total_stars))
+                unique_repos.append({"name": name, "url": r.get("html_url"), "desc": ai_desc, "stars": total_stars, "today": stars_today})
+    finally:
+        conn.close()
     return unique_repos
 
-# 4. 发送飞书卡片
+# 5. 发送飞书卡片
 def send_feishu_card(repo_list, title="🚀 GitHub 智能趋势 (精选)"):
-    if not repo_list: return
+    if not repo_list or not FEISHU_WEBHOOK: return
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": f"**[{r['name']}]({r['url']})**\n⭐ {r['stars']} (今日 +{r['today']}) | 💡 {r['desc']}"}} for r in repo_list]
     for i in range(len(elements) - 1, 0, -1): elements.insert(i, {"tag": "hr"})
-    requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": title}}, "elements": elements}})
+    try:
+        requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": title}}, "elements": elements}})
+    except Exception as e:
+        print(f"飞书发送失败: {e}")
 
-# 5. 周报逻辑
+# 6. 周报逻辑
 def send_weekly_report():
     try:
-        conn = get_db_connection() # 使用封装后的连接
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT repo_name, repo_url, SUM(stars_today) as weekly_growth, MAX(total_stars) as total FROM github_trends WHERE pushed_at > DATE_SUB(NOW(), INTERVAL 7 DAY) GROUP BY repo_name ORDER BY weekly_growth DESC LIMIT 5")
             rows = cursor.fetchall()
@@ -89,10 +109,12 @@ def send_weekly_report():
                 for i in range(len(elements) - 1, 0, -1): elements.insert(i, {"tag": "hr"})
                 requests.post(FEISHU_WEBHOOK, json={"msg_type": "interactive", "card": {"header": {"title": {"tag": "plain_text", "content": "🏆 GitHub 本周硬核黑马周报"}}, "elements": elements}})
         conn.close()
-    except Exception as e: print(f"周报发送失败: {e}")
+    except Exception as e:
+        print(f"周报发送失败: {e}")
 
 if __name__ == "__main__":
     raw_data = fetch_github_trending_official(MONITOR_LANGUAGE)
-    filtered_data = save_and_filter_repos(raw_data)
-    if filtered_data: send_feishu_card(filtered_data)
+    if raw_data:
+        filtered_data = save_and_filter_repos(raw_data)
+        if filtered_data: send_feishu_card(filtered_data)
     if datetime.now().weekday() == 6: send_weekly_report()
