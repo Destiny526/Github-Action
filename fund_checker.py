@@ -1,199 +1,153 @@
 import os
-import sys
 import requests
 import pymysql
 import json
+import time
 from datetime import datetime
 
-# 从 GitHub Secrets 自动读取环境变量
+# 配置获取
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 DB_HOST = os.environ.get('DB_HOST')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
+DB_PORT = int(os.environ.get('DB_PORT', 4000)) # 适配 TiDB 4000 端口
+
+# 1. 统一数据库连接函数（带重试机制）
+def get_db_connection(retries=3, delay=5):
+    for i in range(retries):
+        try:
+            return pymysql.connect(
+                host=DB_HOST, port=DB_PORT, user=DB_USER,
+                password=DB_PASSWORD, database=DB_NAME, 
+                charset='utf8mb4', connect_timeout=10,
+                cursorclass=pymysql.cursors.DictCursor
+            )
+        except Exception as e:
+            print(f"数据库连接失败，重试 ({i+1}/{retries})... 错误: {e}")
+            time.sleep(delay)
+    raise Exception("无法连接到数据库")
+
+# 📊 独家算法：可视化纯文本图形条
+def generate_visual_bar(rate):
+    try:
+        level = min(max(int(abs(rate) * 3), 1), 10)
+        filled = "█" * level
+        empty = "░" * (10 - level)
+        return f"`[{filled}{empty}]` 📈" if rate >= 0 else f"`[{empty}{filled}]` 📉"
+    except:
+        return "`[░░░░░░░░░░]`"
 
 def get_user_holdings():
     holdings = {}
+    conn = None
     try:
-        connection = pymysql.connect(
-            host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME,
-            port=3306, charset='utf8mb4', connect_timeout=10
-        )
-        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM user_holdings")
-            rows = cursor.fetchall()
-            for row in rows:
+            for row in cursor.fetchall():
                 holdings[row['fund_code']] = row
     except Exception as e:
         print(f"[-] 读取持仓配置失败: {e}")
     finally:
-        if 'connection' in locals() and connection:
-            connection.close()
+        if conn: conn.close()
     return holdings
-
-# 📊 独家算法：根据涨跌幅动态生成可视化纯文本图形条
-def generate_visual_bar(rate):
-    try:
-        # 将涨跌幅放大映射到 10 个格子的进度条
-        level = min(max(int(abs(rate) * 3), 1), 10) 
-        filled = "█" * level
-        empty = "░" * (10 - level)
-        if rate >= 0:
-            return f"`[{filled}{empty}]` 📈"
-        else:
-            return f"`[{empty}{filled}]` 📉"
-    except:
-        return "`[░░░░░░░░░░]`"
 
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
-        print("[!] 警告：未在数据库中检测到任何资产持仓配置！")
+        print("[!] 警告：未检测到任何资产持仓配置！")
         return [], 0.0, 0.0
 
-    print(f"[*] 开始计算资产实时盈亏，目标监控代码: {list(holdings.keys())}")
     calculated_funds = []
-    total_today_earning = 0.0  
-    total_hold_earning = 0.0   
+    total_today_earning = 0.0
+    total_hold_earning = 0.0
 
     for code, meta in holdings.items():
         try:
             url = f"http://fundgz.1234567.com.cn/js/{code}.js"
-            response = requests.get(url, timeout=5)
-            
+            response = requests.get(url, timeout=10)
             if response.status_code == 200 and "jsonpgz" in response.text:
-                clean_text = response.text[max(0, response.text.find("{")):response.text.rfind("}")+1]
+                clean_text = response.text[response.text.find("{"):response.text.rfind("}")+1]
                 data = json.loads(clean_text)
                 
-                estimated_nav = float(data.get("gsz", data["dwjz"])) if data.get("gsz") else float(data["dwjz"])
-                growth_rate = float(data.get("gszzl", "0.0")) if data.get("gszzl") else 0.0
-                yesterday_nav = float(data["dwjz"])      
-                v_time = data.get("gztime", datetime.now().strftime('%H:%M'))
+                estimated_nav = float(data.get("gsz", data["dwjz"]))
+                growth_rate = float(data.get("gszzl", "0.0"))
+                yesterday_nav = float(data["dwjz"])
                 
                 shares = float(meta['holding_shares'])
-                cost = float(meta['cost_price'])
                 investment = float(meta['total_investment'])
                 
                 today_earning = shares * (estimated_nav - yesterday_nav)
-                current_market_value = shares * estimated_nav
-                hold_earning = current_market_value - investment
+                hold_earning = (shares * estimated_nav) - investment
                 
                 total_today_earning += today_earning
                 total_hold_earning += hold_earning
                 
                 calculated_funds.append({
-                    "code": code,
-                    "name": meta['fund_name'],
-                    "nav": estimated_nav,
-                    "rate": growth_rate,
-                    "v_time": v_time,
+                    "code": code, "name": meta['fund_name'], "nav": estimated_nav,
+                    "rate": growth_rate, "v_time": data.get("gztime", "N/A"),
                     "today_earning": round(today_earning, 2),
                     "hold_earning": round(hold_earning, 2),
-                    "visual_bar": generate_visual_bar(growth_rate) # 塞入图形数据
+                    "visual_bar": generate_visual_bar(growth_rate)
                 })
         except Exception as e:
-            print(f"[-] 基金 [{code}] 计算失败: {e}")
+            print(f"[-] 基金 [{code}] 计算异常: {e}")
             
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
 def save_snapshot_to_mysql(fund_list):
     if not fund_list: return False
+    conn = None
     try:
-        connection = pymysql.connect(
-            host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, port=3306
-        )
-        with connection.cursor() as cursor:
-            sql = """
-            INSERT INTO fund_valuation_history 
-            (fund_code, fund_name, estimated_nav, growth_rate, valuation_time) 
-            VALUES (%s, %s, %s, %s, %s)
-            """
-            payload = [(f['code'], f['name'], f['nav'], f['rate'], f['v_time']) for f in fund_list]
-            cursor.executemany(sql, payload)
-        connection.commit()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            sql = "INSERT INTO fund_valuation_history (fund_code, fund_name, estimated_nav, growth_rate, valuation_time) VALUES (%s, %s, %s, %s, %s)"
+            cursor.executemany(sql, [(f['code'], f['name'], f['nav'], f['rate'], f['v_time']) for f in fund_list])
+        conn.commit()
         return True
     except Exception as e:
         print(f"[-] 历史快照存入失败: {e}")
         return False
     finally:
-        if 'connection' in locals() and connection: connection.close()
+        if conn: conn.close()
 
 def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
     if not FEISHU_WEBHOOK: return
+    
+    # 增加阈值报警逻辑
+    alert_msg = ""
+    for f in fund_list:
+        if abs(f['rate']) > 3.0:
+            alert_msg += f"\n⚠️ 预警: {f['name']} 波动达 {f['rate']}%!"
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     account_color = "red" if today_total >= 0 else "green"
-    account_sign = "+" if today_total >= 0 else ""
-    hold_sign = "+" if hold_total >= 0 else ""
-    db_status_text = "🟢 写入成功" if db_success else "🔴 写入异常"
     
     card_fields = []
     for f in fund_list:
-        if f['rate'] >= 1.5: icon = "🔺 暴涨"
-        elif f['rate'] > 0: icon = "📈 翻红"
-        elif f['rate'] < -1.5: icon = "🚨 暴跌"
-        else: icon = "📉 飘绿"
-        
         color = "red" if f['rate'] >= 0 else "green"
-        rate_sign = "+" if f['rate'] >= 0 else ""
-        today_earn_sign = "+" if f['today_earning'] >= 0 else ""
-        hold_earn_sign = "+" if f['hold_earning'] >= 0 else ""
-        
-        # 左栏：加入图形化能量条
         card_fields.append({
             "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": f"**{f['name']}** ({f['code']})\n⏱️ 状态：{icon}\n📊 实时涨跌：<font color='{color}'>**{rate_sign}{f['rate']}%**</font>\n纵览：{f['visual_bar']}"
-            }
+            "text": {"tag": "lark_md", "content": f"**{f['name']}**\n📊 涨跌: <font color='{color}'>**{f['rate']}%**</font>\n{f['visual_bar']}"}
         })
-        # 右栏
         card_fields.append({
             "is_short": True,
-            "text": {
-                "tag": "lark_md",
-                "content": f"💰 今日盈亏：<font color='{color}'>**{today_earn_sign}{f['today_earning']} 元**</font>\n📦 累计盈亏：**{hold_earn_sign}{f['hold_earning']} 元**\n💎 净值估算：**{f['nav']}**"
-            }
+            "text": {"tag": "lark_md", "content": f"💰 今日: **{f['today_earning']}**\n📦 累计: **{f['hold_earning']}**"}
         })
 
-    advanced_payload = {
+    payload = {
         "msg_type": "interactive",
         "card": {
-            "config": {"enable_forward": True},
-            "header": {
-                "template": "violet" if today_total >= 0 else "turquoise",  
-                "title": {"tag": "plain_text", "content": f"🏆 智能资产财富大盘日报 ({today_str})"}
-            },
+            "header": {"template": "violet" if today_total >= 0 else "turquoise", "title": {"tag": "plain_text", "content": f"🏆 资产复盘 ({today_str})"}},
             "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        # ✨ 彻底解决符号乱码：去掉所有 # 号，使用飞书原生支持的粗体大字号样式
-                        "content": f"<font size='4'><b>📊 今日账户总资产复盘</b></font>\n\n☀️ 今日全账户收益总计：<font color='{account_color}'>**{account_sign}{today_total} 元**</font>\n🌲 历史全账户持仓总盈亏：**{hold_sign}{hold_total} 元**"
-                    }
-                },
-                {"tag": "hr"}, 
-                {
-                    "tag": "div",
-                    "fields": card_fields 
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "note",
-                    "elements": [
-                        {"tag": "plain_text", "content": f"📡 数据源：天天基金实时节点 | 存储状态：{db_status_text}"}
-                    ]
-                }
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"今日总收益：<font color='{account_color}'>**{today_total} 元**</font>{alert_msg}"}},
+                {"tag": "hr"}, {"tag": "div", "fields": card_fields}, {"tag": "hr"},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"存储状态：{'🟢 成功' if db_success else '🔴 异常'}"}]}
             ]
         }
     }
-
-    try:
-        response = requests.post(FEISHU_WEBHOOK, json=advanced_payload, timeout=10)
-        print(f"[+] 飞书发送完成，响应状态码: {response.status_code}")
-    except Exception as e:
-        print(f"[-] 飞书发送失败: {e}")
+    requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
 
 if __name__ == "__main__":
     data_list, today_sum, hold_sum = fetch_and_calculate()
