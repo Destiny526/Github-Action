@@ -9,59 +9,77 @@ FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
 def get_weather_data():
-    """获取明日预报与分时详情"""
+    """获取明日预报详情"""
+    # 强制请求全量数据以获取详细字段
     url = f"https://restapi.amap.com/v3/weather/weatherInfo?key={WEATHER_KEY}&city={CITY_CODE}&extensions=all"
     resp = requests.get(url, timeout=15).json()
     
-    # 获取明天的数据 (casts[1])
-    tomorrow = resp['forecasts'][0]['casts'][1]
-    
-    # 获取小时级预报 (cast 数组中可能包含小时级 detail)
-    # 若 API 返回 hourly 列表，直接取用；若无，则用晨/午/晚概况代替
-    hourly_info = resp['forecasts'][0].get('cast', []) 
-    return tomorrow, hourly_info
+    # 返回明天的数据 (casts[1])
+    return resp['forecasts'][0]['casts'][1]
 
 def get_ai_advice(info):
-    """利用 DeepSeek 生成生活建议"""
-    prompt = f"明日天气：{info['dayweather']}，气温 {info['nighttemp']}°C~{info['daytemp']}°C。请以专业气象管家口吻，提供一条简短（50字内）的穿衣及避险建议。"
-    
+    """利用 DeepSeek 生成智能生活洞察"""
+    prompt = f"""
+    明日天气：{info['dayweather']}，气温：{info['nighttemp']}°C~{info['daytemp']}°C。
+    请以专业气象服务专家口吻，生成一条建议。
+    要求：
+    1. 包含穿衣建议与避险提醒。
+    2. 语气专业、冷静、客观。
+    3. 50字以内。
+    """
     url = "https://api.deepseek.com/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY.strip()}", "Content-Type": "application/json"}
     payload = {
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
+        "temperature": 0.5
     }
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=10).json()
         return resp['choices'][0]['message']['content']
     except:
-        return "建议关注气温变化，适时增减衣物。"
+        return "请密切关注天气变化，合理安排户外出行计划。"
 
 def send_feishu_card(info, advice):
-    """发送高颜值多列布局卡片"""
+    """发送企业级 UI 布局的交互式卡片"""
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%m月%d日')
     
-    # 构造飞书多列布局
     card = {
         "msg_type": "interactive",
         "card": {
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"📅 {tomorrow_date} 天气预报"}},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"📅 {tomorrow_date} 气象预报中心"}},
             "elements": [
+                # 矩阵看板：企业级数据对齐
                 {
                     "tag": "div",
-                    "text": {"tag": "lark_md", "content": f"**概况**：{info['dayweather']}\n**气温**：{info['nighttemp']}°C ~ {info['daytemp']}°C\n**风向/风力**：{info['daywind']}风 {info['daypower']}级"}
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"☀️ 白天\n{info['dayweather']}"}}]},
-                        {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"🌙 夜间\n{info['nightweather']}"}}]}
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**天气状况**\n{info['dayweather']}"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**温度区间**\n{info['nighttemp']}°C - {info['daytemp']}°C"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**白天风向**\n{info['daywind']}风"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**最大风力**\n{info['daypower']} 级"}}
                     ]
                 },
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**💡 AI 管家建议**：\n{advice}"}}
+                # 双列对比视图
+                {
+                    "tag": "column_set",
+                    "flex_mode": "bisect",
+                    "columns": [
+                        {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"☀️ **白日气象**\n{info['dayweather']}"}}]},
+                        {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"🌙 **夜间气象**\n{info['nightweather']}"}}]}
+                    ]
+                },
+                {"tag": "hr"},
+                # 智能洞察区
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"**🤖 AI 深度智能洞察**\n<font color='blue'>{advice}</font>"}
+                },
+                # 系统页脚
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text", "content": "实时高德气象数据接口 | 系统自动监测运行"}]
+                }
             ]
         }
     }
@@ -69,8 +87,8 @@ def send_feishu_card(info, advice):
 
 if __name__ == "__main__":
     try:
-        tomorrow_info, _ = get_weather_data()
+        tomorrow_info = get_weather_data()
         advice = get_ai_advice(tomorrow_info)
         send_feishu_card(tomorrow_info, advice)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"执行异常: {e}")
