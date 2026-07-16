@@ -1,0 +1,17 @@
+name: 每日天气预报
+on:
+  schedule:
+    - cron: '0 13 * * *' # UTC 13:00 = 北京时间 21:00
+  workflow_dispatch:
+
+jobs:
+  weather:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Weather Bot
+        env:
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          CITY_CODE: ${{ secrets.CITY_CODE }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: python weather_bot.py
