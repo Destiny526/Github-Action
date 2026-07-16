@@ -12,61 +12,76 @@ def get_weather_data():
     """获取高德全量天气数据"""
     url = f"https://restapi.amap.com/v3/weather/weatherInfo?key={WEATHER_KEY}&city={CITY_CODE}&extensions=all"
     resp = requests.get(url, timeout=30).json()
-    
     if resp.get('status') != '1':
-        raise Exception(f"高德API错误: {resp.get('info')}")
-        
+        raise Exception(f"API请求失败: {resp.get('info')}")
+    
     forecast = resp['forecasts'][0]
     tomorrow = forecast['casts'][1]
-    
-    # 尝试提取小时级数据
-    hourly_points = forecast.get('hourly', [])
-    return tomorrow, hourly_points
+    hourly = forecast.get('hourly', [])
+    return tomorrow, hourly
 
 def get_ai_advice(info):
-    prompt = f"明日天气：{info['dayweather']}，气温：{info['nighttemp']}°C~{info['daytemp']}°C。请以专业气象员口吻，提供一条50字以内的避险建议。"
-    url = "https://api.deepseek.com/chat/completions"
+    """DeepSeek 生成智能建议"""
+    prompt = f"明天{info['dayweather']}，气温{info['nighttemp']}°C~{info['daytemp']}°C。请提供一条专业的穿衣及活动建议（50字内）。"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY.strip()}", "Content-Type": "application/json"}
-    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5}
+    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}]}
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30).json()
+        resp = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=30).json()
         return resp['choices'][0]['message']['content']
     except:
-        return "请密切关注天气变化，合理安排户外出行。"
+        return "气温波动，建议关注天气预报，合理规划行程。"
 
-def send_feishu_card(info, hourly_points, advice):
+def send_feishu_card(info, hourly, advice):
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%m月%d日')
     
-    # 智能布局逻辑：如果有小时数据则展示，无则展示概况
-    if hourly_points:
-        # 每隔4小时取样，保证卡片整洁
-        sampled_data = hourly_points[::4]
-        columns = [{"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"{h['time'][-5:-3]}时\n**{h['temperature']}°C**\n☀️"}}]} for h in sampled_data]
-    else:
-        # 降级方案：早中晚分布
-        columns = [
-            {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"☀️ 白天\n{info['daytemp']}°C\n{info['dayweather']}"}}]},
-            {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"🌙 夜间\n{info['nighttemp']}°C\n{info['nightweather']}"}}]}
-        ]
-
+    # 1. 智能预警色：超过 30 度显示红色警告模板
+    header_template = "red" if int(info['daytemp']) > 30 else "blue"
+    
+    # 2. 构造高密度进度条矩阵
+    elements = []
+    if hourly:
+        for h in hourly[::6]: # 每6小时取一个点，确保布局整洁
+            temp = int(h['temperature'])
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"{h['time'][-5:-3]}时: **{temp}°C**"},
+                "extra": {"tag": "progress", "percent": min(max(temp * 2, 0), 100)}
+            })
+    
     card = {
         "msg_type": "interactive",
         "card": {
-            "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"📅 {tomorrow_date} 气象趋势预报"}},
+            "header": {"template": header_template, "title": {"tag": "plain_text", "content": f"🌤️ {tomorrow_date} 天气监测看板"}},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**今日概况**：{info['dayweather']} | 气温：{info['nighttemp']}°C - {info['daytemp']}°C"}},
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**最高温度**\n{info['daytemp']}°C"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**最低温度**\n{info['nighttemp']}°C"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**天气状况**\n{info['dayweather']}"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**风向/等级**\n{info['daywind']}/{info['daypower']}级"}}
+                    ]
+                },
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": "**🕰️ 气温变化趋势**"}},
-                {"tag": "column_set", "flex_mode": "none", "columns": columns},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**🌡️ 气温时序热力监测**"}},
+                *elements,
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🤖 AI 深度智能洞察**\n<font color='blue'>{advice}</font>"}},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": "实时高德气象数据 | 自动运行已启用"}]}
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🤖 AI 深度分析**\n<font color='blue'>{advice}</font>"}},
+                {
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "查看权威气象详情"},
+                        "type": "primary",
+                        "url": "https://weather.cma.cn/"
+                    }]
+                }
             ]
         }
     }
     requests.post(FEISHU_WEBHOOK, json=card, timeout=30)
 
 if __name__ == "__main__":
-    tomorrow_info, hourly_data = get_weather_data()
-    advice = get_ai_advice(tomorrow_info)
-    send_feishu_card(tomorrow_info, hourly_data, advice)
+    info, hourly = get_weather_data()
+    advice = get_ai_advice(info)
+    send_feishu_card(info, hourly, advice)
