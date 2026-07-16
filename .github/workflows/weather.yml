@@ -2,8 +2,8 @@ name: Daily Weather Bot
 
 on:
   schedule:
-    - cron: '0 13 * * *' # UTC 13:00，即北京时间 21:00
-  workflow_dispatch:     # 支持手动触发测试
+    - cron: '0 13 * * *' # 北京时间 21:00
+  workflow_dispatch:
 
 jobs:
   weather:
