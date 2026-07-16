@@ -33,20 +33,29 @@ def get_ai_advice(info):
 
 def send_feishu_card(info, hourly, advice):
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%m月%d日')
-    
-    # 1. 智能预警色：超过 30 度显示红色警告模板
     header_template = "red" if int(info['daytemp']) > 30 else "blue"
     
-    # 2. 构造高密度进度条矩阵
-    elements = []
+    # 构造动态内容逻辑：有小时数据则热力监测，无则日夜对比
     if hourly:
-        for h in hourly[::6]: # 每6小时取一个点，确保布局整洁
+        elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "**🌡️ 气温时序热力监测**"}}]
+        for h in hourly[::6]:
             temp = int(h['temperature'])
             elements.append({
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": f"{h['time'][-5:-3]}时: **{temp}°C**"},
                 "extra": {"tag": "progress", "percent": min(max(temp * 2, 0), 100)}
             })
+    else:
+        elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**🌡️ 气温监测（无时序数据）**"}},
+            {
+                "tag": "column_set",
+                "columns": [
+                    {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"☀️ 白天最高\n**{info['daytemp']}°C**"}}]},
+                    {"tag": "column", "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"🌙 夜间最低\n**{info['nighttemp']}°C**"}}]}
+                ]
+            }
+        ]
     
     card = {
         "msg_type": "interactive",
@@ -63,7 +72,6 @@ def send_feishu_card(info, hourly, advice):
                     ]
                 },
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": "**🌡️ 气温时序热力监测**"}},
                 *elements,
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**🤖 AI 深度分析**\n<font color='blue'>{advice}</font>"}},
