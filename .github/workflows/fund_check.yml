@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install
-        run: pip install requests pymysql
+        run: pip install requests pymysql Chinese-Calendar  # 👈 这里新增了依赖包
       - name: Run
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
@@ -23,5 +23,5 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: '4000' # 必须添加此行
+          DB_PORT: '4000'
         run: python fund_checker.py
