@@ -4,6 +4,7 @@ import pymysql
 import json
 import time
 from datetime import datetime
+from chinese_calendar import is_workday
 
 # 配置获取
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
@@ -138,6 +139,14 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
     requests.post(FEISHU_WEBHOOK, json=payload, timeout=10)
 
 if __name__ == "__main__":
-    data_list, today_sum, hold_sum = fetch_and_calculate()
-    db_status = save_snapshot_to_mysql(data_list)
-    send_advanced_feishu_card(data_list, today_sum, hold_sum, db_status)
+    today = datetime.now().date()
+    
+    # 使用 Chinese Calendar 准确识别法定工作日（自动排除周末及法定节假日）
+    if not is_workday(today):
+        print(f"今天 ({today}) 是非交易日（周末或法定节假日），跳过基金检测任务。")
+    else:
+        print(f"今天 ({today}) 是法定工作日，开始执行基金检测任务...")
+        data_list, today_sum, hold_sum = fetch_and_calculate()
+        db_status = save_snapshot_to_mysql(data_list)
+        send_advanced_feishu_card(data_list, today_sum, hold_sum, db_status)
+        print("基金检测任务执行完毕。")
