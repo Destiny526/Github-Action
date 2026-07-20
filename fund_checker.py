@@ -4,7 +4,7 @@ import pymysql
 import json
 import time
 from datetime import datetime
-from chinese_calendar import is_workday
+from chinese_calendar import is_workday  # 引入节假日判断库
 
 # 配置获取
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
@@ -14,7 +14,7 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_NAME = os.environ.get('DB_NAME')
 DB_PORT = int(os.environ.get('DB_PORT', 4000))
 
-# 1. 统一数据库连接（完全对齐 GitHub Bot 的重试逻辑）
+# 1. 统一数据库连接（带有重试逻辑）
 def get_db_connection(retries=3, delay=5):
     for i in range(retries):
         try:
@@ -29,7 +29,7 @@ def get_db_connection(retries=3, delay=5):
             time.sleep(delay)
     raise Exception("无法连接到数据库")
 
-# 2. 可视化条算法（保持原有逻辑）
+# 2. 可视化条算法
 def generate_visual_bar(rate):
     try:
         level = min(max(int(abs(rate) * 3), 1), 10)
@@ -56,7 +56,7 @@ def get_user_holdings():
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
-        print("[!] 未检测到持仓配置！")
+        print("[!] 未检测到持仓配置！请检查数据库 user_holdings 表中是否有数据。")
         return [], 0.0, 0.0
 
     calculated_funds, total_today_earning, total_hold_earning = [], 0.0, 0.0
@@ -94,7 +94,7 @@ def fetch_and_calculate():
             
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
-# 5. 数据入库（标准化处理）
+# 5. 数据入库
 def save_snapshot_to_mysql(fund_list):
     if not fund_list: return False
     conn = get_db_connection()
@@ -114,7 +114,6 @@ def save_snapshot_to_mysql(fund_list):
 def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
     if not FEISHU_WEBHOOK: return
     
-    # 预警逻辑
     alert_msg = "\n".join([f"⚠️ 预警: {f['name']} 波动达 {f['rate']}%!" for f in fund_list if abs(f['rate']) > 3.0])
     today_str = datetime.now().strftime('%Y-%m-%d')
     account_color = "red" if today_total >= 0 else "green"
@@ -141,12 +140,20 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
 if __name__ == "__main__":
     today = datetime.now().date()
     
-    # 使用 Chinese Calendar 准确识别法定工作日（自动排除周末及法定节假日）
+    # 智能节假日/周末判断：如果不是工作日，直接安全退出，避免空跑和报错
     if not is_workday(today):
-        print(f"今天 ({today}) 是非交易日（周末或法定节假日），跳过基金检测任务。")
-    else:
-        print(f"今天 ({today}) 是法定工作日，开始执行基金检测任务...")
-        data_list, today_sum, hold_sum = fetch_and_calculate()
-        db_status = save_snapshot_to_mysql(data_list)
-        send_advanced_feishu_card(data_list, today_sum, hold_sum, db_status)
-        print("基金检测任务执行完毕。")
+        print(f"今天 ({today}) 是周末或法定节假日，跳过基金检测任务。")
+        exit(0)
+        
+    print(f"今天 ({today}) 是法定工作日，开始执行基金检测任务...")
+    
+    data_list, today_sum, hold_sum = fetch_and_calculate()
+    
+    # 如果持仓配置为空，给出友好提示并不做错误入库
+    if not data_list:
+        print("[!] 未获取到任何有效的基金估值数据，可能为非交易时间或持仓表为空。")
+        exit(0)
+        
+    db_status = save_snapshot_to_mysql(data_list)
+    send_advanced_feishu_card(data_list, today_sum, hold_sum, db_status)
+    print("基金检测任务执行完毕。")
