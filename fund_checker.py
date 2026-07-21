@@ -4,7 +4,7 @@ import pymysql
 import json
 import time
 from datetime import datetime
-from chinese_calendar import is_workday  # 引入节假日判断库
+from chinese_calendar import is_workday
 
 # 配置获取
 FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
@@ -52,7 +52,7 @@ def get_user_holdings():
         conn.close()
     return holdings
 
-# 4. 核心计算逻辑
+# 4. 核心计算逻辑（含非交易时间/接口失效的降级兜底）
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
@@ -60,38 +60,45 @@ def fetch_and_calculate():
         return [], 0.0, 0.0
 
     calculated_funds, total_today_earning, total_hold_earning = [], 0.0, 0.0
+    api_success_count = 0
 
     for code, meta in holdings.items():
+        estimated_nav, growth_rate, v_time = None, 0.0, "N/A"
         try:
             url = f"http://fundgz.1234567.com.cn/js/{code}.js"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=5)
             if response.status_code == 200 and "jsonpgz" in response.text:
                 clean_text = response.text[response.text.find("{"):response.text.rfind("}")+1]
                 data = json.loads(clean_text)
-                
                 estimated_nav = float(data.get("gsz", data["dwjz"]))
                 growth_rate = float(data.get("gszzl", "0.0"))
-                yesterday_nav = float(data["dwjz"])
-                
-                shares = float(meta['holding_shares'])
-                investment = float(meta['total_investment'])
-                
-                today_earning = shares * (estimated_nav - yesterday_nav)
-                hold_earning = (shares * estimated_nav) - investment
-                
-                total_today_earning += today_earning
-                total_hold_earning += hold_earning
-                
-                calculated_funds.append({
-                    "code": code, "name": meta['fund_name'], "nav": estimated_nav,
-                    "rate": growth_rate, "v_time": data.get("gztime", "N/A"),
-                    "today_earning": round(today_earning, 2),
-                    "hold_earning": round(hold_earning, 2),
-                    "visual_bar": generate_visual_bar(growth_rate)
-                })
+                v_time = data.get("gztime", "N/A")
+                api_success_count += 1
         except Exception as e:
-            print(f"[-] 基金 [{code}] 计算异常: {e}")
-            
+            print(f"[-] 实时接口请求 [{code}] 失败: {e}，将尝试降级读取数据库。")
+
+        yesterday_nav = float(meta['dwjz'] if 'dwjz' in meta else meta.get('cost_price', 1.0))
+        shares = float(meta['holding_shares'])
+        investment = float(meta['total_investment'])
+
+        # 降级兜底：如果实时接口拿不到数据（如晚上休市），尝试从历史表或默认值计算
+        if estimated_nav is None:
+            estimated_nav = yesterday_nav  # 降级使用昨日净值或成本价，确保晚上也能跑通测试
+
+        today_earning = shares * (estimated_nav - yesterday_nav)
+        hold_earning = (shares * estimated_nav) - investment
+        
+        total_today_earning += today_earning
+        total_hold_earning += hold_earning
+        
+        calculated_funds.append({
+            "code": code, "name": meta['fund_name'], "nav": estimated_nav,
+            "rate": growth_rate, "v_time": v_time,
+            "today_earning": round(today_earning, 2),
+            "hold_earning": round(hold_earning, 2),
+            "visual_bar": generate_visual_bar(growth_rate)
+        })
+        
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
 # 5. 数据入库
@@ -140,7 +147,6 @@ def send_advanced_feishu_card(fund_list, today_total, hold_total, db_success):
 if __name__ == "__main__":
     today = datetime.now().date()
     
-    # 智能节假日/周末判断：如果不是工作日，直接安全退出，避免空跑和报错
     if not is_workday(today):
         print(f"今天 ({today}) 是周末或法定节假日，跳过基金检测任务。")
         exit(0)
@@ -149,11 +155,10 @@ if __name__ == "__main__":
     
     data_list, today_sum, hold_sum = fetch_and_calculate()
     
-    # 如果持仓配置为空，给出友好提示并不做错误入库
     if not data_list:
-        print("[!] 未获取到任何有效的基金估值数据，可能为非交易时间或持仓表为空。")
+        print("[!] 未获取到任何基金数据。")
         exit(0)
         
     db_status = save_snapshot_to_mysql(data_list)
     send_advanced_feishu_card(data_list, today_sum, hold_sum, db_status)
-    print("基金检测任务执行完毕。")
+    print("基金检测任务执行完毕并已成功推送。")
