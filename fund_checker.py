@@ -52,7 +52,7 @@ def get_user_holdings():
         conn.close()
     return holdings
 
-# 4. 核心计算逻辑（含非交易时间/接口失效的降级兜底）
+# 4. 核心计算逻辑（完美适配你刚刚建好的字段）
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
@@ -60,10 +60,9 @@ def fetch_and_calculate():
         return [], 0.0, 0.0
 
     calculated_funds, total_today_earning, total_hold_earning = [], 0.0, 0.0
-    api_success_count = 0
 
     for code, meta in holdings.items():
-        estimated_nav, growth_rate, v_time = None, 0.0, "N/A"
+        estimated_nav, growth_rate, v_time = None, 0.0, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
             url = f"http://fundgz.1234567.com.cn/js/{code}.js"
             response = requests.get(url, timeout=5)
@@ -72,20 +71,20 @@ def fetch_and_calculate():
                 data = json.loads(clean_text)
                 estimated_nav = float(data.get("gsz", data["dwjz"]))
                 growth_rate = float(data.get("gszzl", "0.0"))
-                v_time = data.get("gztime", "N/A")
-                api_success_count += 1
+                v_time = data.get("gztime", v_time)
         except Exception as e:
-            print(f"[-] 实时接口请求 [{code}] 失败: {e}，将尝试降级读取数据库。")
+            print(f"[-] 实时接口请求 [{code}] 失败: {e}，将使用成本价降级兜底。")
 
-        yesterday_nav = float(meta['dwjz'] if 'dwjz' in meta else meta.get('cost_price', 1.0))
+        # 对应你建表时的字段：cost_price（成本价）, holding_shares（份额）, total_investment（总本金）
+        cost_price = float(meta['cost_price'])
         shares = float(meta['holding_shares'])
         investment = float(meta['total_investment'])
 
-        # 降级兜底：如果实时接口拿不到数据（如晚上休市），尝试从历史表或默认值计算
+        # 如果晚上接口拿不到实时净值，降级使用成本价
         if estimated_nav is None:
-            estimated_nav = yesterday_nav  # 降级使用昨日净值或成本价，确保晚上也能跑通测试
+            estimated_nav = cost_price
 
-        today_earning = shares * (estimated_nav - yesterday_nav)
+        today_earning = shares * (estimated_nav - cost_price)
         hold_earning = (shares * estimated_nav) - investment
         
         total_today_earning += today_earning
@@ -101,7 +100,7 @@ def fetch_and_calculate():
         
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
-# 5. 数据入库
+# 5. 数据入库（完美匹配 fund_valuation_history 表）
 def save_snapshot_to_mysql(fund_list):
     if not fund_list: return False
     conn = get_db_connection()
