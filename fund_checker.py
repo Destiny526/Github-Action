@@ -39,20 +39,34 @@ def generate_visual_bar(rate):
     except:
         return "`[░░░░░░░░░░]`"
 
-# 3. 获取配置
+# 3. 获取配置和最近一次历史净值（修复晚上降级为0的问题）
 def get_user_holdings():
     holdings = {}
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 获取持仓信息
             cursor.execute("SELECT * FROM user_holdings")
             for row in cursor.fetchall():
-                holdings[row['fund_code']] = row
+                code = row['fund_code']
+                holdings[code] = row
+                # 默认先拿成本价兜底
+                holdings[code]['last_nav'] = float(row['cost_price'])
+
+            # 从历史快照表里查出每只基金“最近一次”的估值，作为晚上非交易时间的兜底
+            for code in holdings:
+                cursor.execute(
+                    "SELECT estimated_nav FROM fund_valuation_history WHERE fund_code = %s ORDER BY valuation_time DESC LIMIT 1",
+                    (code,)
+                )
+                res = cursor.fetchone()
+                if res and res['estimated_nav']:
+                    holdings[code]['last_nav'] = float(res['estimated_nav'])
     finally:
         conn.close()
     return holdings
 
-# 4. 核心计算逻辑（完美适配你刚刚建好的字段）
+# 4. 核心计算逻辑
 def fetch_and_calculate():
     holdings = get_user_holdings()
     if not holdings:
@@ -73,18 +87,19 @@ def fetch_and_calculate():
                 growth_rate = float(data.get("gszzl", "0.0"))
                 v_time = data.get("gztime", v_time)
         except Exception as e:
-            print(f"[-] 实时接口请求 [{code}] 失败: {e}，将使用成本价降级兜底。")
+            print(f"[-] 实时接口请求 [{code}] 失败: {e}，将使用数据库历史净值降级兜底。")
 
-        # 对应你建表时的字段：cost_price（成本价）, holding_shares（份额）, total_investment（总本金）
         cost_price = float(meta['cost_price'])
         shares = float(meta['holding_shares'])
         investment = float(meta['total_investment'])
+        fallback_nav = float(meta['last_nav'])
 
-        # 如果晚上接口拿不到实时净值，降级使用成本价
+        # 如果接口拿不到实时净值，使用数据库中最近一次的历史净值降级
         if estimated_nav is None:
-            estimated_nav = cost_price
+            estimated_nav = fallback_nav
 
-        today_earning = shares * (estimated_nav - cost_price)
+        # 今日收益 = 份额 * (当前估值 - 最近一次历史净值)
+        today_earning = shares * (estimated_nav - fallback_nav)
         hold_earning = (shares * estimated_nav) - investment
         
         total_today_earning += today_earning
@@ -100,7 +115,7 @@ def fetch_and_calculate():
         
     return calculated_funds, round(total_today_earning, 2), round(total_hold_earning, 2)
 
-# 5. 数据入库（完美匹配 fund_valuation_history 表）
+# 5. 数据入库
 def save_snapshot_to_mysql(fund_list):
     if not fund_list: return False
     conn = get_db_connection()
